@@ -7,11 +7,14 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write   # lets tagged builds attach the APK to a Release
+  contents: write
 
 concurrency:
   group: apk-${{ github.ref }}
   cancel-in-progress: true
+
+env:
+  NPM_CONFIG_LEGACY_PEER_DEPS: 'true'
 
 jobs:
   apk:
@@ -19,6 +22,19 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+
+      - name: Locate the project
+        run: |
+          if [ ! -f package.json ] && ls ./*.zip >/dev/null 2>&1; then
+            for z in ./*.zip; do unzip -oq "$z"; done
+          fi
+          PKG=$(find . -maxdepth 3 -name package.json -not -path '*/node_modules/*' | awk '{print length($0), $0}' | sort -n | head -n1 | cut -d' ' -f2-)
+          if [ -z "$PKG" ]; then
+            echo "::error::No package.json found in the repo. Upload the project files, not only a .zip."
+            exit 1
+          fi
+          echo "APP_DIR=$(dirname "$PKG")" >> "$GITHUB_ENV"
+          echo "Project found in: $(dirname "$PKG")"
 
       - uses: actions/setup-node@v4
         with:
@@ -34,6 +50,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
 
       - name: Install JS dependencies
+        working-directory: ${{ env.APP_DIR }}
         run: |
           npm install
           npx expo install react react-native expo-constants expo-linking expo-status-bar react-native-safe-area-context react-native-screens
@@ -41,10 +58,11 @@ jobs:
           npx expo install --fix
 
       - name: Generate native Android project
+        working-directory: ${{ env.APP_DIR }}
         run: npx expo prebuild --platform android --no-install
 
       - name: Build release APK
-        working-directory: android
+        working-directory: ${{ env.APP_DIR }}/android
         run: |
           chmod +x gradlew
           ./gradlew assembleRelease --no-daemon
@@ -53,11 +71,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: pdf-studio-apk-${{ github.run_number }}
-          path: android/app/build/outputs/apk/release/*.apk
+          path: ${{ env.APP_DIR }}/android/app/build/outputs/apk/release/*.apk
           if-no-files-found: error
 
       - name: Attach APK to GitHub Release (tag builds only)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: android/app/build/outputs/apk/release/*.apk
+          files: ${{ env.APP_DIR }}/android/app/build/outputs/apk/release/*.apk
